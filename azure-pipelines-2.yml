@@ -1,25 +1,89 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
-
 trigger:
-- main
+  - none
 
-pool:
-  vmImage: ubuntu-latest
+jobs:
+  - job: ubuntu
+    displayName: "detect-secrets on Ubuntu Linux agent"
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+      - task: UsePythonVersion@0
+        displayName: "Set Python 3 as default"
+        inputs:
+          versionSpec: "3"
+          addToPath: true
+          architecture: "x64"
 
-steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
+      - bash: pip install detect-secrets
+        displayName: "Install detect-secrets using pip"
 
-- script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
-- task: PublishCodeCoverageResults@1
-  inputs:
-    codeCoverageTool: "JaCoCo"
-    summaryFileLocation: "$(System.DefaultWorkingDirectory)/**/site/jacoco/jacoco.xml"
-    reportDirectory: "$(System.DefaultWorkingDirectory)/**/site/jacoco"
-    failIfCoverageEmpty: true
+      - bash: |
+          detect-secrets --version
+          detect-secrets scan --all-files --force-use-all-plugins --exclude-files FETCH_HEAD > $(Pipeline.Workspace)/detect-secrets.json
+        displayName: "Run detect-secrets tool"
+
+      - task: PublishPipelineArtifact@1
+        displayName: "Publish results in the Pipeline Artifact"
+        inputs:
+          targetPath: "$(Pipeline.Workspace)/detect-secrets.json"
+          artifact: "detect-secrets-ubuntu"
+          publishLocation: "pipeline"
+
+      - bash: |
+          dsjson=$(cat $(Pipeline.Workspace)/detect-secrets.json)
+          echo "${dsjson}"
+
+          count=$(echo "${dsjson}" | jq -c -r '.results | length')
+
+          if [ $count -gt 0 ]; then
+            msg="Secrets were detected in code. ${count} file(s) affected."
+            echo "##vso[task.logissue type=error]${msg}"
+            echo "##vso[task.complete result=Failed;]${msg}."
+          else
+            echo "##vso[task.complete result=Succeeded;]No secrets detected."
+          fi
+        displayName: "Analyzing detect-secrets results"
+
+  - job: windows
+    displayName: "detect-secrets on Windows agent"
+    pool:
+      vmImage: windows-latest
+    steps:
+      - task: UsePythonVersion@0
+        displayName: "Set Python 3 as default"
+        inputs:
+          versionSpec: "3"
+          addToPath: true
+          architecture: "x64"
+
+      - script: pip install detect-secrets==1.0.3
+        displayName: "Install detect-secrets using pip"
+
+      - script: |
+          detect-secrets --version
+          detect-secrets scan --all-files --force-use-all-plugins > $(Pipeline.Workspace)/detect-secrets.json
+        displayName: "Run detect-secrets tool"
+
+      - task: PublishPipelineArtifact@1
+        displayName: "Publish results in the Pipeline Artifact"
+        inputs:
+          targetPath: "$(Pipeline.Workspace)/detect-secrets.json"
+          artifact: "detect-secrets-windows"
+          publishLocation: "pipeline"
+
+      - pwsh: |
+          $dsjson = Get-Content $(Pipeline.Workspace)/detect-secrets.json
+          Write-Output $dsjson
+
+          $dsObj = $dsjson | ConvertFrom-Json
+          $count = ($dsObj.results | Get-Member -MemberType NoteProperty).Count
+
+          if ($count -gt 0) {
+            $msg = "Secrets were detected in code. $count file(s) affected. "
+            Write-Host "##vso[task.logissue type=error]$msg"
+            Write-Host "##vso[task.complete result=Failed;]$msg"
+          }
+          else {
+            Write-Host "##vso[task.complete result=Succeeded;]No secrets detected."
+          }
+        displayName: "Analyzing detect-secrets results"
